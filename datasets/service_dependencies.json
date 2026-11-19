@@ -1,0 +1,48 @@
+{
+  "services": [
+    {
+      "service": "database",
+      "depends_on": []
+    },
+    {
+      "service": "cache",
+      "depends_on": []
+    },
+    {
+      "service": "api",
+      "depends_on": ["database", "cache"]
+    },
+    {
+      "service": "authentication",
+      "depends_on": ["api", "database"]
+    },
+    {
+      "service": "payment",
+      "depends_on": ["api", "database"]
+    },
+    {
+      "service": "order-service",
+      "depends_on": ["api", "payment", "database"]
+    },
+    {
+      "service": "notification-service",
+      "depends_on": ["cache"]
+    },
+    {
+      "service": "frontend",
+      "depends_on": ["api", "authentication"]
+    },
+    {
+      "service": "billing-service",
+      "depends_on": []
+    },
+    {
+      "service": "marketing-cms",
+      "depends_on": []
+    },
+    {
+      "service": "search-service",
+      "depends_on": ["cache"]
+    }
+  ]
+}

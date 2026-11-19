@@ -1,0 +1,162 @@
+[
+  {
+    "alert_id": "ALT-001",
+    "service": "database",
+    "alert_type": "high_cpu",
+    "message": "Database CPU usage reached 96% on primary instance",
+    "severity": "critical",
+    "timestamp": "2026-11-19T10:00:00Z",
+    "source": "prometheus",
+    "host": "db-primary-01"
+  },
+  {
+    "alert_id": "ALT-002",
+    "service": "database",
+    "alert_type": "connection_pool_exhausted",
+    "message": "Max active database connections (500/500) reached",
+    "severity": "critical",
+    "timestamp": "2026-11-19T10:00:15Z",
+    "source": "prometheus",
+    "host": "db-primary-01"
+  },
+  {
+    "alert_id": "ALT-003",
+    "service": "database",
+    "alert_type": "high_cpu",
+    "message": "Database CPU usage reached 97% on primary instance",
+    "severity": "critical",
+    "timestamp": "2026-11-19T10:00:20Z",
+    "source": "prometheus",
+    "host": "db-primary-01"
+  },
+  {
+    "alert_id": "ALT-004",
+    "service": "api",
+    "alert_type": "query_timeout",
+    "message": "Postgres read timeout after 5000ms on /api/v1/orders",
+    "severity": "high",
+    "timestamp": "2026-11-19T10:01:05Z",
+    "source": "datadog",
+    "host": "api-gateway-01"
+  },
+  {
+    "alert_id": "ALT-005",
+    "service": "api",
+    "alert_type": "http_500_spike",
+    "message": "HTTP 500 Internal Server Error rate exceeded 18%",
+    "severity": "critical",
+    "timestamp": "2026-11-19T10:01:25Z",
+    "source": "datadog",
+    "host": "api-gateway-02"
+  },
+  {
+    "alert_id": "ALT-006",
+    "service": "authentication",
+    "alert_type": "dependency_timeout",
+    "message": "User session verification timeout contacting database",
+    "severity": "high",
+    "timestamp": "2026-11-19T10:01:45Z",
+    "source": "cloudwatch",
+    "host": "auth-service-01"
+  },
+  {
+    "alert_id": "ALT-007",
+    "service": "frontend",
+    "alert_type": "service_degradation",
+    "message": "Frontend UI latency spiked to 4.2s across user sessions",
+    "severity": "high",
+    "timestamp": "2026-11-19T10:02:10Z",
+    "source": "sentry",
+    "host": "frontend-edge-01"
+  },
+  {
+    "alert_id": "ALT-008",
+    "service": "billing-service",
+    "alert_type": "cron_execution_delayed",
+    "message": "Nightly reconciliation batch job execution delayed by 2 minutes",
+    "severity": "low",
+    "timestamp": "2026-11-19T10:01:10Z",
+    "source": "airflow",
+    "host": "batch-worker-01"
+  },
+  {
+    "alert_id": "ALT-009",
+    "service": "marketing-cms",
+    "alert_type": "media_upload_warning",
+    "message": "CMS media library upload latency exceeded 2000ms",
+    "severity": "medium",
+    "timestamp": "2026-11-19T10:01:30Z",
+    "source": "cms-monitor",
+    "host": "cms-web-01"
+  },
+  {
+    "alert_id": "ALT-010",
+    "service": "database",
+    "alert_type": "high_cpu",
+    "message": "Database CPU usage reached 96% on primary instance",
+    "severity": "critical",
+    "timestamp": "2026-11-19T10:00:00Z",
+    "source": "prometheus",
+    "host": "db-primary-01"
+  },
+  {
+    "alert_id": "ALT-011",
+    "service": "payment",
+    "alert_type": "network_packet_loss",
+    "message": "Outbound packet loss to payment processor exceeded 45%",
+    "severity": "critical",
+    "timestamp": "2026-11-19T10:15:00Z",
+    "source": "netflow",
+    "host": "gw-switch-az1"
+  },
+  {
+    "alert_id": "ALT-012",
+    "service": "order-service",
+    "alert_type": "dns_resolution_failed",
+    "message": "DNS resolution failure for outbound payment webhook host",
+    "severity": "high",
+    "timestamp": "2026-11-19T10:15:20Z",
+    "source": "datadog",
+    "host": "order-srv-01"
+  },
+  {
+    "alert_id": "ALT-013",
+    "service": "payment",
+    "alert_type": "connection_refused",
+    "message": "TCP connect timeout 10.0.12.44:443 in subnet-az1",
+    "severity": "critical",
+    "timestamp": "2026-11-19T10:14:40Z",
+    "source": "netflow",
+    "host": "gw-switch-az1"
+  },
+  {
+    "alert_id": "ALT-014",
+    "service": "notification-service",
+    "alert_type": "network_packet_loss",
+    "message": "Push notification socket connection reset by peer",
+    "severity": "medium",
+    "timestamp": "2026-11-19T10:15:45Z",
+    "source": "netflow",
+    "host": "gw-switch-az1"
+  },
+  {
+    "alert_id": "ALT-015",
+    "service": "search-service",
+    "alert_type": "disk_space_warning",
+    "message": "Elasticsearch disk mount /var/lib/data reached 82% capacity",
+    "severity": "low",
+    "timestamp": "2026-11-19T10:03:00Z",
+    "source": "prometheus",
+    "host": null
+  },
+  {
+    "alert_id": "ALT-016",
+    "service": "frontend",
+    "alert_type": "ssl_cert_expiry",
+    "message": "TLS certificate for api.example.com will expire in 28 days",
+    "severity": "info",
+    "timestamp": "2026-11-19T10:04:00Z",
+    "source": null,
+    "host": "edge-proxy-01"
+  }
+]

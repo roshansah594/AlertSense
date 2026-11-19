@@ -1,0 +1,15 @@
+# AlertSense - Member 1 AI & Correlation Requirements
+pydantic>=2.6.0
+networkx>=3.2.0
+pandas>=2.2.0
+pytest>=8.0.0
+python-dotenv>=1.0.0
+# AI & Orchestration (for subsequent stages)
+langgraph>=0.2.0
+langchain-google-genai>=2.0.0
+google-genai>=1.0.0
+# Web / API Interface (for Member 2 Backend integration)
+fastapi>=0.110.0
+uvicorn>=0.28.0
+
+
