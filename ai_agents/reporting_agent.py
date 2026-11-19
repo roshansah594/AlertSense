@@ -161,7 +161,6 @@ class ReportingAgent:
         missing_evidence = root_cause_analysis.get("missing_evidence", []) if root_cause_analysis else []
         safe_checks = root_cause_analysis.get("recommended_investigation_checks", []) if root_cause_analysis else []
 
-        # Attempt Gemini LLM report generation if active
         # Attempt Gemini LLM report generation if service is configured
         if self.gemini_service.is_configured():
             try:

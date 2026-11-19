@@ -131,7 +131,6 @@ class RootCauseAgent:
         if len(candidate_incident.get("alert_ids", [])) == 1:
             return self._analyze_singleton_incident(candidate_incident, alerts_in_incident[0])
 
-        # Attempt LLM reasoning if Gemini client is active
         # Attempt LLM reasoning if Gemini service is configured
         if self.gemini_service.is_configured():
             try:
