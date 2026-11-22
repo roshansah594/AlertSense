@@ -1,14 +1,17 @@
 """AlertSense Database Models & Query Operations.
 
 Provides data access and persistence functions for Alerts, Incidents,
-Actions, and Analytics.
+Actions, and Analytics with parameterized queries and transaction guarantees.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List, Optional
 from backend.database.connection import get_connection
+
+logger = logging.getLogger(__name__)
 
 
 def save_alerts(alerts: List[Dict[str, Any]]) -> int:
@@ -16,7 +19,7 @@ def save_alerts(alerts: List[Dict[str, Any]]) -> int:
     
     Returns the count of newly inserted alerts.
     """
-    if not alerts:
+    if not alerts or not isinstance(alerts, list):
         return 0
 
     conn = get_connection()
@@ -24,24 +27,27 @@ def save_alerts(alerts: List[Dict[str, Any]]) -> int:
     try:
         with conn:
             for alert in alerts:
+                if not isinstance(alert, dict):
+                    continue
                 aid = alert.get("alert_id")
                 if not aid:
                     continue
                 
-                meta_str = json.dumps(alert.get("metadata", {}))
+                metadata = alert.get("metadata")
+                meta_str = json.dumps(metadata) if isinstance(metadata, dict) else "{}"
                 cur = conn.execute("""
                     INSERT OR IGNORE INTO alerts (
                         alert_id, service, alert_type, message, severity, timestamp, source, host, metadata
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    aid,
-                    alert.get("service", "").lower().strip(),
-                    alert.get("alert_type", "").lower().strip(),
-                    alert.get("message", ""),
-                    alert.get("severity", "medium").lower().strip(),
-                    alert.get("timestamp", ""),
-                    alert.get("source"),
-                    alert.get("host"),
+                    str(aid).strip(),
+                    str(alert.get("service", "")).lower().strip(),
+                    str(alert.get("alert_type", "")).lower().strip(),
+                    str(alert.get("message", "")).strip(),
+                    str(alert.get("severity", "medium")).lower().strip(),
+                    str(alert.get("timestamp", "")).strip(),
+                    str(alert.get("source")).strip() if alert.get("source") else None,
+                    str(alert.get("host")).strip() if alert.get("host") else None,
                     meta_str
                 ))
                 if cur.rowcount > 0:
@@ -60,10 +66,10 @@ def get_all_alerts(
     try:
         query = "SELECT * FROM alerts WHERE 1=1"
         params: List[Any] = []
-        if severity and isinstance(severity, str):
+        if severity and isinstance(severity, str) and severity.lower() != "all":
             query += " AND LOWER(severity) = ?"
             params.append(severity.lower().strip())
-        if service and isinstance(service, str):
+        if service and isinstance(service, str) and service.lower() != "all":
             query += " AND LOWER(service) = ?"
             params.append(service.lower().strip())
         query += " ORDER BY timestamp ASC"
@@ -85,15 +91,20 @@ def get_all_alerts(
 
 def save_incident_analysis(analysis_result: Dict[str, Any]) -> None:
     """Persist analyzed incidents, associated alerts, and recommendations."""
+    if not analysis_result or not isinstance(analysis_result, dict):
+        return
+
     # Ensure all alerts from the analysis are persisted before linking
     if analysis_result.get("alerts"):
         save_alerts(analysis_result["alerts"])
 
     candidate_incidents = analysis_result.get("candidate_incidents", [])
-    rca_findings = {f.get("incident_id"): f for f in analysis_result.get("root_cause_findings", [])}
-    sev_assessments = {s.get("incident_id"): s for s in analysis_result.get("severity_assessments", [])}
+    rca_findings = {f.get("incident_id"): f for f in analysis_result.get("root_cause_findings", []) if isinstance(f, dict)}
+    sev_assessments = {s.get("incident_id"): s for s in analysis_result.get("severity_assessments", []) if isinstance(s, dict)}
     incident_report = analysis_result.get("incident_report", {})
-    reports_by_id = {rep.get("incident_id"): rep for rep in incident_report.get("incidents", [])}
+    if not isinstance(incident_report, dict):
+        incident_report = {}
+    reports_by_id = {rep.get("incident_id"): rep for rep in incident_report.get("incidents", []) if isinstance(rep, dict)}
     workflow_status = analysis_result.get("workflow_status", "completed")
     needs_review = 1 if analysis_result.get("needs_human_review") else 0
 
@@ -101,14 +112,22 @@ def save_incident_analysis(analysis_result: Dict[str, Any]) -> None:
     try:
         with conn:
             for grp in candidate_incidents:
+                if not isinstance(grp, dict):
+                    continue
                 iid = grp.get("group_id")
                 if not iid:
                     continue
 
                 rca = rca_findings.get(iid, {})
-                primary_hyp = rca.get("primary_hypothesis", {})
-                sev = sev_assessments.get(iid, {})
-                rep = reports_by_id.get(iid, {})
+                primary_hyp = rca.get("primary_hypothesis", {}) if isinstance(rca, dict) else {}
+                if not isinstance(primary_hyp, dict):
+                    primary_hyp = {}
+                sev = sev_assessments.get(iid, {}) if isinstance(sev_assessments, dict) else {}
+                if not isinstance(sev, dict):
+                    sev = {}
+                rep = reports_by_id.get(iid, {}) if isinstance(reports_by_id, dict) else {}
+                if not isinstance(rep, dict):
+                    rep = {}
 
                 title = rep.get("title") or f"Incident on {', '.join(grp.get('affected_services', []))}"
                 raw_sev = str(sev.get("severity_level", "P3")).upper()
@@ -123,10 +142,14 @@ def save_incident_analysis(analysis_result: Dict[str, Any]) -> None:
                 else:
                     sev_level = "P3"
 
-                sev_score = float(sev.get("severity_score", 5.0))
+                try:
+                    sev_score = float(sev.get("severity_score", 5.0))
+                except (ValueError, TypeError):
+                    sev_score = 5.0
+
                 rationale_list = sev.get("rationale", [])
                 if isinstance(rationale_list, list):
-                    sev_reasoning = " ".join(rationale_list)
+                    sev_reasoning = " ".join(str(r) for r in rationale_list)
                 else:
                     sev_reasoning = str(rationale_list or "")
                 urgency = sev.get("urgency", "MODERATE")
@@ -138,7 +161,7 @@ def save_incident_analysis(analysis_result: Dict[str, Any]) -> None:
                 exec_summary = rep.get("executive_summary") or primary_hyp.get("explanation", "")
                 summary = exec_summary
                 
-                time_range = grp.get("time_range", {})
+                time_range = grp.get("time_range", {}) if isinstance(grp.get("time_range"), dict) else {}
                 start_time = time_range.get("start_time", "")
                 end_time = time_range.get("end_time", "")
                 affected_svcs_str = json.dumps(grp.get("affected_services", []))
@@ -175,32 +198,38 @@ def save_incident_analysis(analysis_result: Dict[str, Any]) -> None:
                     workflow_status, needs_review, start_time, end_time, affected_svcs_str
                 ))
 
-                # Link alerts to this incident
+                # Refresh linked alerts for this incident to avoid stale/duplicate associations
+                conn.execute("DELETE FROM incident_alerts WHERE incident_id = ?", (iid,))
+
                 for aid in grp.get("alert_ids", []):
-                    conn.execute("""
-                        INSERT OR IGNORE INTO incident_alerts (incident_id, alert_id, is_duplicate)
-                        VALUES (?, ?, 0)
-                    """, (iid, aid))
+                    if aid:
+                        conn.execute("""
+                            INSERT OR IGNORE INTO incident_alerts (incident_id, alert_id, is_duplicate)
+                            VALUES (?, ?, 0)
+                        """, (iid, aid))
 
                 for dup_id in grp.get("duplicate_alert_ids", []):
-                    conn.execute("""
-                        INSERT OR IGNORE INTO incident_alerts (incident_id, alert_id, is_duplicate)
-                        VALUES (?, ?, 1)
-                    """, (iid, dup_id))
+                    if dup_id:
+                        conn.execute("""
+                            INSERT OR IGNORE INTO incident_alerts (incident_id, alert_id, is_duplicate)
+                            VALUES (?, ?, 1)
+                        """, (iid, dup_id))
 
                 # Actions
                 conn.execute("DELETE FROM incident_actions WHERE incident_id = ?", (iid,))
                 actions = rep.get("recommended_actions", [])
-                for act in actions:
-                    conn.execute("""
-                        INSERT INTO incident_actions (incident_id, action_text, category, is_safe_readonly)
-                        VALUES (?, ?, ?, ?)
-                    """, (
-                        iid,
-                        act.get("action", ""),
-                        act.get("category", "Diagnostic Investigation"),
-                        1 if act.get("is_safe_readonly", True) else 0
-                    ))
+                if isinstance(actions, list):
+                    for act in actions:
+                        if isinstance(act, dict):
+                            conn.execute("""
+                                INSERT INTO incident_actions (incident_id, action_text, category, is_safe_readonly)
+                                VALUES (?, ?, ?, ?)
+                            """, (
+                                iid,
+                                act.get("action", ""),
+                                act.get("category", "Diagnostic Investigation"),
+                                1 if act.get("is_safe_readonly", True) else 0
+                            ))
     finally:
         conn.close()
 
@@ -276,8 +305,11 @@ def get_analytics_summary() -> Dict[str, Any]:
     """Calculate aggregated analytics across all stored alerts and incidents."""
     conn = get_connection()
     try:
-        total_alerts = conn.execute("SELECT COUNT(*) as cnt FROM alerts").fetchone()["cnt"]
-        total_incidents = conn.execute("SELECT COUNT(*) as cnt FROM incidents").fetchone()["cnt"]
+        total_alerts_row = conn.execute("SELECT COUNT(*) as cnt FROM alerts").fetchone()
+        total_alerts = total_alerts_row["cnt"] if total_alerts_row else 0
+
+        total_incidents_row = conn.execute("SELECT COUNT(*) as cnt FROM incidents").fetchone()
+        total_incidents = total_incidents_row["cnt"] if total_incidents_row else 0
 
         # Severity distribution of alerts
         sev_rows = conn.execute("""

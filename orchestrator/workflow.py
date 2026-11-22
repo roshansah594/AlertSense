@@ -25,24 +25,45 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Preprocessing Node
+# Preprocessing Node (Bug 1 Fix: Malformed Alert Handling)
 # ---------------------------------------------------------------------------
 
 def preprocessing_node(state: AlertSenseState) -> Dict[str, Any]:
-    """Validate, sanitize, and sort incoming alert payloads."""
-    raw_alerts = state.get("alerts", [])
+    """Validate, sanitize, and sort incoming alert payloads.
+    
+    Robustly handles malformed items (None, strings, numbers, lists, empty dicts,
+    or missing fields) without crashing the workflow.
+    """
+    raw_alerts = state.get("alerts")
+    if not isinstance(raw_alerts, list):
+        raw_alerts = []
+
     valid_alerts: List[Dict[str, Any]] = []
     errors = list(state.get("errors", []))
 
     for alert in raw_alerts:
+        # Check if alert is a dictionary
+        if not isinstance(alert, dict):
+            logger.warning(f"Malformed alert (expected dict, got {type(alert).__name__}): {alert}")
+            errors.append({
+                "stage": "preprocessing",
+                "alert_id": "unknown",
+                "error": f"Malformed alert payload: expected dict, got {type(alert).__name__} ({repr(alert)})"
+            })
+            continue
+
+        # Extract alert_id safely
+        aid = alert.get("alert_id")
+        alert_id_str = str(aid).strip() if (aid is not None and str(aid).strip()) else "unknown"
+
         try:
             norm = NormalizedAlert(**alert)
             valid_alerts.append(norm.model_dump())
         except Exception as e:
-            logger.warning(f"Validation error for alert {alert}: {e}")
+            logger.warning(f"Validation error for alert '{alert_id_str}': {e}")
             errors.append({
                 "stage": "preprocessing",
-                "alert_id": alert.get("alert_id", "unknown"),
+                "alert_id": alert_id_str,
                 "error": str(e)
             })
 
@@ -70,18 +91,20 @@ def finalize_workflow_node(state: AlertSenseState) -> Dict[str, Any]:
     errors = state.get("errors", [])
     needs_review = state.get("needs_human_review", False)
     root_cause_findings = state.get("root_cause_findings", [])
-    candidate_incidents = state.get("candidate_incidents", [])
+    valid_alerts = state.get("preprocessed_alerts", [])
+    incident_report = state.get("incident_report")
 
-    # Check if empty alerts were processed
-    if not state.get("preprocessed_alerts"):
+    # Check if no valid alerts were processed
+    if not valid_alerts:
+        status_code = "completed" if not errors else "completed_with_errors"
         return {
-            "workflow_status": "completed",
-            "needs_human_review": False,
+            "workflow_status": status_code,
+            "needs_human_review": bool(errors),
             "incident_report": {
                 "total_incidents_reported": 0,
                 "high_severity_incidents_count": 0,
                 "incidents": [],
-                "workflow_status": "completed"
+                "workflow_status": status_code
             }
         }
 
@@ -91,14 +114,24 @@ def finalize_workflow_node(state: AlertSenseState) -> Dict[str, Any]:
         needs_review = True
     elif needs_review:
         status = "requires_human_review"
-    elif any(f.get("status") == "completed_with_fallback" for f in root_cause_findings):
+    elif any(f.get("status") == "completed_with_fallback" for f in root_cause_findings if isinstance(f, dict)):
         status = "completed_with_fallback"
     else:
         status = "completed"
 
+    # Ensure incident report has the final workflow status
+    if isinstance(incident_report, dict):
+        incident_report["workflow_status"] = status
+
     return {
         "workflow_status": status,
-        "needs_human_review": needs_review
+        "needs_human_review": needs_review,
+        "incident_report": incident_report or {
+            "total_incidents_reported": 0,
+            "high_severity_incidents_count": 0,
+            "incidents": [],
+            "workflow_status": status
+        }
     }
 
 
@@ -145,7 +178,6 @@ def create_alert_sense_workflow() -> Any:
 # Primary Integration Interface (Callable by Member 2)
 # ---------------------------------------------------------------------------
 
-# Global compiled workflow instance
 _COMPILED_WORKFLOW = None
 
 
@@ -175,8 +207,8 @@ def analyze_alerts(
         Structured dictionary conforming to the incident response data contract.
     """
     initial_state: AlertSenseState = {
-        "alerts": alerts,
-        "service_dependencies": service_dependencies,
+        "alerts": alerts if isinstance(alerts, list) else [],
+        "service_dependencies": service_dependencies if isinstance(service_dependencies, (dict, list)) else {},
         "config": config or {},
         "errors": [],
         "needs_human_review": False,

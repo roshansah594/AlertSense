@@ -7,12 +7,18 @@ AI multi-agent orchestration into a single runnable service.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from typing import List
+from fastapi import FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
-from backend.database.connection import init_db
+load_dotenv()
+
+from backend.database.connection import init_db, check_db_health
 from backend.api.routes import router
+from orchestrator.workflow import get_compiled_workflow
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +32,8 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager to initialize DB on startup."""
     logger.info("Initializing AlertSense database...")
     init_db()
+    # Pre-compile LangGraph workflow
+    get_compiled_workflow()
     logger.info("AlertSense AI & Multi-Agent Platform ready.")
     yield
 
@@ -37,12 +45,32 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware for React frontend
+# ---------------------------------------------------------------------------
+# CORS Configuration (Security Hardened)
+# ---------------------------------------------------------------------------
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower().strip()
+raw_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+
+if raw_origins:
+    allowed_origins = [orig.strip() for orig in raw_origins.split(",") if orig.strip()]
+elif ENVIRONMENT == "production":
+    # Production strictly forbids wildcard origins with credentials
+    logger.warning("CORS_ALLOWED_ORIGINS not set in production. Defaulting to strict empty origin list.")
+    allowed_origins = []
+else:
+    # Development defaults to standard local dev servers
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -55,6 +83,7 @@ def root():
     return {
         "project": "AlertSense",
         "version": "1.0.0",
+        "environment": ENVIRONMENT,
         "status": "Running",
         "description": "Alert Storm Correlation & Root Cause Analysis Platform",
         "documentation": "/docs"
@@ -62,11 +91,30 @@ def root():
 
 
 @app.get("/health")
-def health():
+def health(response: Response):
+    """Comprehensive health check verifying DB connectivity and application readiness.
+    
+    Returns HTTP 503 if critical dependencies (database or orchestrator) are unavailable.
+    """
+    db_healthy, db_details = check_db_health()
+    orchestrator_ready = False
+
+    try:
+        wf = get_compiled_workflow()
+        orchestrator_ready = wf is not None
+    except Exception as e:
+        logger.error(f"Orchestrator health check failed: {e}")
+
+    is_healthy = db_healthy and orchestrator_ready
+
+    if not is_healthy:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
     return {
-        "status": "healthy",
-        "database": "connected",
-        "orchestrator": "LangGraph StateGraph",
+        "status": "healthy" if is_healthy else "unhealthy",
+        "database": "connected" if db_healthy else "disconnected",
+        "database_details": db_details,
+        "orchestrator": "LangGraph StateGraph" if orchestrator_ready else "unavailable",
         "ai_agents": [
             "CorrelationAgent",
             "RootCauseAgent",

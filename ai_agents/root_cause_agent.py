@@ -94,10 +94,22 @@ class RootCauseAgent:
         model_name: Optional[str] = None,
         timeout_seconds: int = 20
     ):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        self.model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        if api_key is not None:
+            self.api_key = api_key.strip()
+        else:
+            self.api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+
+        if model_name is not None:
+            self.model_name = model_name.strip()
+        else:
+            self.model_name = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+
         self.timeout_seconds = timeout_seconds
-        self.gemini_service = GeminiService(api_key=self.api_key, model_name=self.model_name)
+        self.gemini_service = GeminiService(
+            api_key=self.api_key,
+            model_name=self.model_name,
+            timeout_seconds=self.timeout_seconds
+        )
 
     def analyze_incident(
         self,

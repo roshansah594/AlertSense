@@ -7,16 +7,21 @@ Also provides utility to load benchmark synthetic alerts from datasets/.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
 from backend.services.preprocessing import normalize_alert
 
+logger = logging.getLogger(__name__)
 DATASETS_DIR = Path(__file__).resolve().parent.parent.parent / "datasets"
 
 
 def process_alerts(alerts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Process and normalize a list of raw alerts, deduplicating identical alert IDs."""
+    if not isinstance(alerts, list):
+        raise ValueError(f"Alerts payload must be a list, got {type(alerts).__name__}")
+
     processed = []
     seen = set()
 

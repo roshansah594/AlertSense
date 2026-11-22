@@ -5,8 +5,8 @@ Implements multi-signal scoring:
     C = 0.30 * Time + 0.30 * Dependency + 0.25 * Symptom + 0.15 * Context/Severity
 
 Features:
-- ISO 8601 timestamp parsing with timezone support and out-of-order handling.
-- Deterministic deduplication with original alert traceability.
+- Robust ISO 8601 timestamp parsing with full timezone normalization and out-of-order handling.
+- Optimized indexed deduplication with original alert traceability.
 - NetworkX topology-aware dependency distance calculation.
 - Causal symptom relationship and taxonomy matching.
 - Critical safeguards: prevents merging solely on time proximity or severity.
@@ -24,6 +24,53 @@ import networkx as nx
 from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Timestamp Normalization & Parsing
+# ---------------------------------------------------------------------------
+
+def parse_iso_timestamp(ts: Any) -> datetime:
+    """Parse an ISO 8601 timestamp string or datetime into a UTC datetime.
+    
+    Supports:
+    - UTC timestamps ending in 'Z' (e.g., 2026-11-19T10:00:00Z)
+    - Timestamps with timezone offsets (e.g., 2026-11-19T10:00:00+05:00)
+    - Naive timestamps (assumed UTC)
+    - datetime instances
+    
+    Raises:
+        ValueError: for None, non-string/non-datetime, empty, malformed, or invalid dates.
+    """
+    if ts is None:
+        raise ValueError("Timestamp cannot be None")
+
+    if isinstance(ts, datetime):
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc)
+
+    if not isinstance(ts, str):
+        raise ValueError(f"Timestamp must be an ISO 8601 string or datetime, got {type(ts).__name__}")
+
+    ts_clean = ts.strip()
+    if not ts_clean:
+        raise ValueError("Timestamp cannot be empty or whitespace")
+
+    if ts_clean.endswith("Z"):
+        ts_clean = ts_clean[:-1] + "+00:00"
+
+    try:
+        dt = datetime.fromisoformat(ts_clean)
+    except Exception as e:
+        raise ValueError(f"Invalid ISO 8601 timestamp format '{ts}': {e}") from e
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+
+    return dt
 
 
 # ---------------------------------------------------------------------------
@@ -57,18 +104,14 @@ class NormalizedAlert(BaseModel):
         v_clean = v.strip().lower()
         allowed = {"critical", "high", "medium", "low", "info"}
         if v_clean not in allowed:
-            # Default to medium if non-standard
             return "medium"
         return v_clean
 
     @field_validator("timestamp", mode="before")
     @classmethod
     def validate_timestamp(cls, v: Any) -> str:
-        if isinstance(v, datetime):
-            return v.isoformat()
-        if not isinstance(v, str) or not v.strip():
-            raise ValueError("timestamp must be a valid ISO 8601 string or datetime")
-        return v.strip()
+        dt = parse_iso_timestamp(v)
+        return dt.isoformat()
 
 
 class PairwiseScoreBreakdown(BaseModel):
@@ -172,35 +215,14 @@ def classify_symptom(alert_type: str, message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Timestamp Normalization & Parsing
-# ---------------------------------------------------------------------------
-
-def parse_iso_timestamp(ts: str) -> datetime:
-    """Parse an ISO 8601 timestamp string into a UTC datetime.
-    
-    Handles strings ending with 'Z', offset notation (+00:00), or naive timestamps.
-    """
-    ts_clean = ts.strip()
-    if ts_clean.endswith("Z"):
-        ts_clean = ts_clean[:-1] + "+00:00"
-    
-    dt = datetime.fromisoformat(ts_clean)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt
-
-
-# ---------------------------------------------------------------------------
-# Deduplication
+# Deduplication with Indexed Grouping
 # ---------------------------------------------------------------------------
 
 def deduplicate_alerts(
     alerts: List[NormalizedAlert],
     duplicate_window_seconds: int = 60
 ) -> Tuple[List[NormalizedAlert], Dict[str, List[str]]]:
-    """Identify duplicate alerts within a short window.
+    """Identify duplicate alerts within a short window using indexed grouping.
     
     Deduplication rules:
     - Same service, alert_type, and host (if present) within duplicate_window_seconds
@@ -209,39 +231,54 @@ def deduplicate_alerts(
     Returns:
         (canonical_alerts, mapping_of_canonical_id_to_duplicate_ids)
     """
-    sorted_alerts = sorted(alerts, key=lambda a: parse_iso_timestamp(a.timestamp))
+    if not alerts:
+        return [], {}
+
+    # Pre-parse timestamps to avoid repeated ISO datetime conversions
+    alert_with_dts = [(alert, parse_iso_timestamp(alert.timestamp)) for alert in alerts]
+    sorted_alerts = sorted(alert_with_dts, key=lambda pair: pair[1])
+
     canonical_alerts: List[NormalizedAlert] = []
+    canonical_dts: Dict[str, datetime] = {}
     duplicate_map: Dict[str, List[str]] = {}
     seen_ids: Set[str] = set()
 
-    for alert in sorted_alerts:
+    # Index canonical alerts by (service, alert_type)
+    indexed_canonicals: Dict[Tuple[str, str], List[NormalizedAlert]] = {}
+
+    for alert, alert_dt in sorted_alerts:
         if alert.alert_id in seen_ids:
             continue
 
-        alert_dt = parse_iso_timestamp(alert.timestamp)
+        key = (alert.service, alert.alert_type)
+        candidates = indexed_canonicals.get(key, [])
         matched_canonical: Optional[NormalizedAlert] = None
 
-        for canonical in canonical_alerts:
-            canon_dt = parse_iso_timestamp(canonical.timestamp)
-            delta_sec = abs((alert_dt - canon_dt).total_seconds())
+        for canonical in reversed(candidates):
+            canon_dt = canonical_dts[canonical.alert_id]
+            delta_sec = (alert_dt - canon_dt).total_seconds()
 
-            # Check if alert is an identical symptom on the same service/host within the window
-            if delta_sec <= duplicate_window_seconds:
-                same_service = alert.service == canonical.service
-                same_type = alert.alert_type == canonical.alert_type
-                same_host = (alert.host == canonical.host) if (alert.host and canonical.host) else True
+            # Since alerts are sorted chronologically, if delta exceeds window,
+            # earlier canonicals in this group will also exceed the window
+            if delta_sec > duplicate_window_seconds:
+                break
 
-                if same_service and same_type and same_host:
-                    matched_canonical = canonical
-                    break
+            same_host = (alert.host == canonical.host) if (alert.host and canonical.host) else True
+            if same_host:
+                matched_canonical = canonical
+                break
 
         if matched_canonical:
             duplicate_map[matched_canonical.alert_id].append(alert.alert_id)
             seen_ids.add(alert.alert_id)
         else:
             canonical_alerts.append(alert)
+            canonical_dts[alert.alert_id] = alert_dt
             duplicate_map[alert.alert_id] = []
             seen_ids.add(alert.alert_id)
+            if key not in indexed_canonicals:
+                indexed_canonicals[key] = []
+            indexed_canonicals[key].append(alert)
 
     return canonical_alerts, duplicate_map
 
@@ -434,7 +471,9 @@ def calculate_pairwise_correlation(
     alert_b: NormalizedAlert,
     dep_graph: nx.DiGraph,
     time_window_seconds: int = 300,
-    weights: Optional[Dict[str, float]] = None
+    weights: Optional[Dict[str, float]] = None,
+    t1: Optional[datetime] = None,
+    t2: Optional[datetime] = None
 ) -> PairwiseScoreBreakdown:
     """Calculate overall correlation between two alerts using weighted signals.
     
@@ -449,11 +488,11 @@ def calculate_pairwise_correlation(
     if weights is None:
         weights = {"time": 0.30, "dependency": 0.30, "symptom": 0.25, "context": 0.15}
 
-    t1 = parse_iso_timestamp(alert_a.timestamp)
-    t2 = parse_iso_timestamp(alert_b.timestamp)
+    dt1 = t1 if t1 is not None else parse_iso_timestamp(alert_a.timestamp)
+    dt2 = t2 if t2 is not None else parse_iso_timestamp(alert_b.timestamp)
 
     # 1. Time proximity
-    t_score, t_reason = calculate_time_similarity(t1, t2, time_window_seconds)
+    t_score, t_reason = calculate_time_similarity(dt1, dt2, time_window_seconds)
 
     # 2. Service dependency
     d_score, d_reason = calculate_dependency_similarity(dep_graph, alert_a.service, alert_b.service)
@@ -482,7 +521,6 @@ def calculate_pairwise_correlation(
         total_score = 0.0
         reasons = ["Safeguard: Alerts occurred around the same time but lack architectural, symptom, or host links."]
     else:
-        # Renormalization if dependency graph has no nodes for both services
         w_t = weights["time"]
         w_d = weights["dependency"]
         w_s = weights["symptom"]
@@ -535,7 +573,7 @@ class CorrelationEngine:
         Returns:
             CorrelationResult with candidate incident groups, deduplication, and metrics.
         """
-        if not alerts_data:
+        if not alerts_data or not isinstance(alerts_data, list):
             return CorrelationResult(
                 groups=[],
                 total_input_alerts=0,
@@ -547,6 +585,9 @@ class CorrelationEngine:
         # 1. Validate & Normalize Alerts
         normalized_alerts: List[NormalizedAlert] = []
         for raw in alerts_data:
+            if not isinstance(raw, dict):
+                logger.warning(f"Skipping non-dictionary alert payload: {raw}")
+                continue
             try:
                 normalized_alerts.append(NormalizedAlert(**raw))
             except Exception as e:
@@ -562,12 +603,15 @@ class CorrelationEngine:
                 noise_reduction_ratio=0.0
             )
 
-        # 2. Deduplicate
+        # 2. Deduplicate using optimized indexed grouping
         canonical_alerts, duplicate_map = deduplicate_alerts(
             normalized_alerts,
             duplicate_window_seconds=self.duplicate_window_seconds
         )
         dedup_count = len(canonical_alerts)
+
+        # Pre-cache parsed datetimes for canonical alerts to avoid repeated parsing
+        parsed_dts = {a.alert_id: parse_iso_timestamp(a.timestamp) for a in canonical_alerts}
 
         # 3. Build Dependency Graph
         dep_graph = build_dependency_graph(service_dependencies)
@@ -575,7 +619,7 @@ class CorrelationEngine:
         # 4. Handle Single Alert Case
         if dedup_count == 1:
             only_alert = canonical_alerts[0]
-            dt = parse_iso_timestamp(only_alert.timestamp)
+            dt = parsed_dts[only_alert.alert_id]
             dups = duplicate_map.get(only_alert.alert_id, [])
             group = CorrelationGroup(
                 group_id="GRP-001",
@@ -609,15 +653,19 @@ class CorrelationEngine:
         all_pairwise_scores: Dict[Tuple[str, str], PairwiseScoreBreakdown] = {}
 
         for i in range(dedup_count):
+            alert_a = canonical_alerts[i]
+            dt_a = parsed_dts[alert_a.alert_id]
             for j in range(i + 1, dedup_count):
-                alert_a = canonical_alerts[i]
                 alert_b = canonical_alerts[j]
+                dt_b = parsed_dts[alert_b.alert_id]
 
                 breakdown = calculate_pairwise_correlation(
                     alert_a=alert_a,
                     alert_b=alert_b,
                     dep_graph=dep_graph,
-                    time_window_seconds=self.time_window_seconds
+                    time_window_seconds=self.time_window_seconds,
+                    t1=dt_a,
+                    t2=dt_b
                 )
                 all_pairwise_scores[(alert_a.alert_id, alert_b.alert_id)] = breakdown
                 all_pairwise_scores[(alert_b.alert_id, alert_a.alert_id)] = breakdown
@@ -639,7 +687,7 @@ class CorrelationEngine:
         components = list(nx.connected_components(cluster_graph))
         
         def component_earliest_dt(comp: Set[str]) -> datetime:
-            return min(parse_iso_timestamp(alert_lookup[aid].timestamp) for aid in comp)
+            return min(parsed_dts[aid] for aid in comp)
 
         components.sort(key=component_earliest_dt)
 
@@ -653,7 +701,7 @@ class CorrelationEngine:
                 comp_duplicates.extend(duplicate_map.get(aid, []))
 
             # Timestamps
-            dts = [parse_iso_timestamp(a.timestamp) for a in comp_alerts]
+            dts = [parsed_dts[aid] for aid in comp_alert_ids]
             start_dt = min(dts)
             end_dt = max(dts)
             duration_sec = int((end_dt - start_dt).total_seconds())
@@ -728,10 +776,7 @@ def correlate_alerts(
     correlation_threshold: float = 0.55,
     duplicate_window_seconds: int = 60
 ) -> Dict[str, Any]:
-    """Pure-Python functional entrypoint for AlertSense alert correlation.
-    
-    Can be directly called by Member 2 or wrapped by the Correlation Agent.
-    """
+    """Pure-Python functional entrypoint for AlertSense alert correlation."""
     engine = CorrelationEngine(
         time_window_seconds=time_window_seconds,
         correlation_threshold=correlation_threshold,
