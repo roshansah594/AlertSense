@@ -1,15 +1,16 @@
 """AlertSense API Routes.
 
 Connects the FastAPI backend shell directly to the LangGraph AI multi-agent
-orchestrator and SQLite persistence layer.
+orchestrator and SQLite persistence layer with authentication and RBAC.
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from backend.api.auth import get_current_user, require_admin
 from backend.services.ingestion import (
     process_alerts,
     load_default_dependencies,
@@ -30,11 +31,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/alerts", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/alerts",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(get_current_user)]
+)
 def receive_alerts(alerts: List[Dict[str, Any]]):
-    """Ingest a batch of normalized monitoring alerts into the platform."""
-    if not alerts:
-        raise HTTPException(status_code=400, detail="Alerts payload cannot be empty.")
+    """Ingest a batch of normalized monitoring alerts into the platform.
+    
+    Requires valid authentication token.
+    """
+    if not isinstance(alerts, list) or not alerts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Alerts payload must be a non-empty list of alert objects."
+        )
 
     try:
         processed = process_alerts(alerts)
@@ -47,29 +58,48 @@ def receive_alerts(alerts: List[Dict[str, Any]]):
             "total_active_alerts": len(get_all_alerts())
         }
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
     except Exception as e:
         logger.error(f"Error ingesting alerts: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to ingest alerts: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to ingest alerts: {e}"
+        )
 
 
-@router.get("/alerts")
+@router.get(
+    "/alerts",
+    dependencies=[Depends(get_current_user)]
+)
 def fetch_alerts(
     severity: Optional[str] = Query(None, description="Filter by severity level"),
     service: Optional[str] = Query(None, description="Filter by service name")
 ):
-    """Retrieve all ingested alerts with optional severity and service filters."""
+    """Retrieve all ingested alerts with optional severity and service filters.
+    
+    Requires valid authentication token.
+    """
     sev = severity if isinstance(severity, str) else None
     svc = service if isinstance(service, str) else None
     return get_all_alerts(severity=sev, service=svc)
 
 
-@router.post("/alerts/load-sample", status_code=status.HTTP_200_OK)
+@router.post(
+    "/alerts/load-sample",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(get_current_user)]
+)
 def load_sample_alerts_endpoint():
-    """Load benchmark synthetic alerts (16 alerts across 6 scenarios) into the platform."""
+    """Load benchmark synthetic alerts (16 alerts across 6 scenarios) into the platform.
+    
+    Requires valid authentication token.
+    """
     samples = load_sample_alerts()
     if not samples:
-        raise HTTPException(status_code=404, detail="datasets/sample_alerts.json not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="datasets/sample_alerts.json not found."
+        )
 
     processed = process_alerts(samples)
     inserted = save_alerts(processed)
@@ -80,16 +110,32 @@ def load_sample_alerts_endpoint():
     }
 
 
-@router.post("/incidents/analyze", status_code=status.HTTP_200_OK)
+@router.post(
+    "/incidents/analyze",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(get_current_user)]
+)
 def analyze_incidents(payload: Optional[Dict[str, Any]] = None):
     """Execute LangGraph Multi-Agent Investigation.
     
     Traverses: Preprocessing -> Correlation -> Root Cause -> Severity -> Reporting.
     Persists resulting incidents and returns executive report.
+    Requires valid authentication token.
     """
+    if payload is not None and not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Analysis payload must be a JSON object."
+        )
+
     # Use alerts from payload if provided; otherwise load all alerts from DB
     if payload and payload.get("alerts"):
         raw_alerts = payload["alerts"]
+        if not isinstance(raw_alerts, list):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'alerts' field in payload must be a list."
+            )
     else:
         raw_alerts = get_all_alerts()
 
@@ -139,34 +185,62 @@ def analyze_incidents(payload: Optional[Dict[str, Any]] = None):
     except Exception as e:
         logger.error(f"Error during incident analysis: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Multi-agent investigation failed: {e}"
         )
 
 
-@router.get("/incidents")
+@router.get(
+    "/incidents",
+    dependencies=[Depends(get_current_user)]
+)
 def fetch_incidents():
-    """Retrieve all investigated incidents with root cause, severity, and timeline."""
+    """Retrieve all investigated incidents with root cause, severity, and timeline.
+    
+    Requires valid authentication token.
+    """
     return get_all_incidents()
 
 
-@router.get("/incidents/{incident_id}")
+@router.get(
+    "/incidents/{incident_id}",
+    dependencies=[Depends(get_current_user)]
+)
 def fetch_incident_details(incident_id: str):
-    """Retrieve deep forensic investigation details for a specific incident."""
+    """Retrieve deep forensic investigation details for a specific incident.
+    
+    Requires valid authentication token.
+    """
     inc = get_incident_by_id(incident_id)
     if not inc:
-        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Incident '{incident_id}' not found."
+        )
     return inc
 
 
-@router.get("/analytics")
+@router.get(
+    "/analytics",
+    dependencies=[Depends(get_current_user)]
+)
 def fetch_analytics():
-    """Retrieve aggregated platform analytics, noise reduction, and severity distribution."""
+    """Retrieve aggregated platform analytics, noise reduction, and severity distribution.
+    
+    Requires valid authentication token.
+    """
     return get_analytics_summary()
 
 
-@router.post("/reset", status_code=status.HTTP_200_OK)
+@router.post(
+    "/reset",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_admin)]
+)
 def reset_platform():
-    """Reset all alerts and incidents for demonstration purposes."""
+    """Reset all alerts and incidents.
+    
+    STRICT: Requires Administrator privileges (admin role).
+    """
     clear_all_data()
     return {"message": "All alerts and incidents cleared successfully."}

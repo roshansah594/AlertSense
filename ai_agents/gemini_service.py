@@ -39,8 +39,17 @@ class GeminiService:
         initial_backoff_seconds: float = 1.0,
         timeout_seconds: int = 25
     ):
-        self.api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
-        self.model_name = (model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")).strip()
+        # Fix: Respect explicitly passed api_key (even if empty string)
+        if api_key is not None:
+            self.api_key = api_key.strip()
+        else:
+            self.api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+
+        if model_name is not None:
+            self.model_name = model_name.strip()
+        else:
+            self.model_name = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+
         self.max_retries = max_retries
         self.initial_backoff_seconds = initial_backoff_seconds
         self.timeout_seconds = timeout_seconds
@@ -58,7 +67,7 @@ class GeminiService:
         """Return True if a valid non-placeholder API key is present."""
         return bool(
             self.api_key
-            and self.api_key != "your_gemini_api_key_here"
+            and self.api_key.lower() not in {"your_gemini_api_key_here", "none", "placeholder", ""}
             and len(self.api_key) > 10
         )
 
@@ -109,6 +118,9 @@ class GeminiService:
                 clean_text = self._sanitize_json_markdown(raw_text)
                 parsed_data = json.loads(clean_text)
 
+                if not isinstance(parsed_data, dict):
+                    raise ValueError(f"Expected JSON object, got {type(parsed_data).__name__}")
+
                 telemetry["success"] = True
                 telemetry["latency_seconds"] = round(time.time() - start_time, 3)
                 return parsed_data, telemetry
@@ -138,9 +150,16 @@ class GeminiService:
 
     @staticmethod
     def _sanitize_json_markdown(text: str) -> str:
-        """Strip markdown code fence blocks if returned by the LLM."""
+        """Strip markdown code fence blocks and extract JSON object."""
         clean = text.strip()
-        if clean.startswith("```"):
-            clean = re.sub(r"^```(?:json)?\s*", "", clean)
-            clean = re.sub(r"\s*```$", "", clean)
+        # Look for markdown code fence ```json ... ``` or ``` ... ```
+        fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean)
+        if fence_match:
+            clean = fence_match.group(1).strip()
+        else:
+            # If no fences, find the outermost { ... } or [ ... ]
+            json_match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", clean)
+            if json_match:
+                clean = json_match.group(1).strip()
+
         return clean.strip()

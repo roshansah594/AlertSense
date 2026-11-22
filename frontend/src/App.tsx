@@ -21,7 +21,19 @@ import {
 } from "lucide-react";
 import "./App.css";
 
-const API = "http://127.0.0.1:8000/api";
+const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
+const AUTH_TOKEN = import.meta.env.VITE_API_KEY || "alertsense-admin-dev-key";
+
+const getHeaders = (extraHeaders?: Record<string, string>) => {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...extraHeaders,
+  };
+  if (AUTH_TOKEN) {
+    headers["Authorization"] = `Bearer ${AUTH_TOKEN}`;
+  }
+  return headers;
+};
 
 type TabType = "overview" | "alerts" | "incidents" | "rca";
 
@@ -82,6 +94,7 @@ function App() {
   const [error, setError] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [loadingSamples, setLoadingSamples] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState("");
 
   // Filters
@@ -101,24 +114,34 @@ function App() {
       setError("");
 
       const [alertsRes, incidentsRes, analyticsRes] = await Promise.all([
-        fetch(`${API}/alerts`),
-        fetch(`${API}/incidents`),
-        fetch(`${API}/analytics`),
+        fetch(`${API}/alerts`, { headers: getHeaders() }),
+        fetch(`${API}/incidents`, { headers: getHeaders() }),
+        fetch(`${API}/analytics`, { headers: getHeaders() }),
       ]);
 
+      if (alertsRes.status === 401 || alertsRes.status === 403) {
+        throw new Error("Authentication failed: invalid or missing API credentials.");
+      }
+
       if (!alertsRes.ok || !incidentsRes.ok || !analyticsRes.ok) {
-        throw new Error("Unable to load platform data.");
+        throw new Error("Unable to load platform data from backend.");
       }
 
       const alertData = await alertsRes.json();
       const incidentData = await incidentsRes.json();
       const analyticsData = await analyticsRes.json();
 
-      setAlerts(alertData);
-      setIncidents(incidentData);
-      setAnalytics(analyticsData);
-    } catch {
-      setError("Backend connection failed. Please ensure FastAPI server is running on http://127.0.0.1:8000.");
+      setAlerts(Array.isArray(alertData) ? alertData : []);
+      setIncidents(Array.isArray(incidentData) ? incidentData : []);
+      setAnalytics({
+        total_alerts: analyticsData?.total_alerts || 0,
+        total_incidents: analyticsData?.total_incidents || 0,
+        noise_reduction_ratio: analyticsData?.noise_reduction_ratio || 0.0,
+        severity_distribution: analyticsData?.severity_distribution || {},
+        incident_severity_distribution: analyticsData?.incident_severity_distribution || {},
+      });
+    } catch (err: any) {
+      setError(err?.message || "Backend connection failed. Please ensure FastAPI server is running on http://127.0.0.1:8000.");
     } finally {
       setLoading(false);
     }
@@ -134,7 +157,13 @@ function App() {
       setError("");
       setAnalysisMessage("");
 
-      const response = await fetch(`${API}/alerts/load-sample`, { method: "POST" });
+      const response = await fetch(`${API}/alerts/load-sample`, {
+        method: "POST",
+        headers: getHeaders(),
+      });
+      if (response.status === 401 || response.status === 403) {
+        throw new Error("Authentication failed: invalid or missing API credentials.");
+      }
       if (!response.ok) throw new Error("Failed to load sample alerts.");
 
       const data = await response.json();
@@ -153,7 +182,13 @@ function App() {
       setError("");
       setAnalysisMessage("");
 
-      const response = await fetch(`${API}/incidents/analyze`, { method: "POST" });
+      const response = await fetch(`${API}/incidents/analyze`, {
+        method: "POST",
+        headers: getHeaders(),
+      });
+      if (response.status === 401 || response.status === 403) {
+        throw new Error("Authentication failed: invalid or missing API credentials.");
+      }
       if (!response.ok) throw new Error("Analysis failed on backend.");
 
       const data = await response.json();
@@ -173,14 +208,30 @@ function App() {
   };
 
   const resetPlatform = async () => {
+    if (resetting) return;
     if (!window.confirm("Are you sure you want to clear all alerts and incidents?")) return;
     try {
+      setResetting(true);
       setError("");
-      await fetch(`${API}/reset`, { method: "POST" });
+      const response = await fetch(`${API}/reset`, {
+        method: "POST",
+        headers: getHeaders(),
+      });
+      if (response.status === 403) {
+        throw new Error("Reset denied: Administrator privileges required.");
+      }
+      if (response.status === 401) {
+        throw new Error("Authentication failed: invalid or missing API credentials.");
+      }
+      if (!response.ok) {
+        throw new Error("Failed to reset platform.");
+      }
       setAnalysisMessage("Platform reset: all alerts and incidents cleared.");
       await loadDashboard();
-    } catch {
-      setError("Failed to reset platform.");
+    } catch (err: any) {
+      setError(err?.message || "Failed to reset platform.");
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -298,9 +349,10 @@ function App() {
             <button
               className="reset-button"
               onClick={resetPlatform}
+              disabled={resetting}
               title="Clear all alerts and incidents"
             >
-              <Trash2 size={15} /> Reset
+              <Trash2 size={15} /> {resetting ? "Resetting..." : "Reset"}
             </button>
             <div className="user-avatar" title="AlertSense Engineer">AS</div>
           </div>
